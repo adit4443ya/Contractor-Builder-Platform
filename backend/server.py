@@ -396,8 +396,23 @@ async def award_bid(project_id: str, bid_id: str, current_user: dict = Depends(g
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
+    # Get accepted bid
+    accepted_bid = await db.bids.find_one({"id": bid_id}, {"_id": 0})
+    if not accepted_bid:
+        raise HTTPException(status_code=404, detail="Bid not found")
+    
+    # Get contractor info for email
+    contractor = await db.contractors.find_one({"id": accepted_bid["contractor_id"]}, {"_id": 0})
+    contractor_user = await db.profiles.find_one({"id": contractor["user_id"]}, {"_id": 0})
+    
     # Update bid status
     await db.bids.update_one({"id": bid_id}, {"$set": {"status": BidStatus.accepted.value}})
+    
+    # Get all rejected bids for email
+    rejected_bids = await db.bids.find(
+        {"project_id": project_id, "id": {"$ne": bid_id}, "status": "pending"}, 
+        {"_id": 0}
+    ).to_list(1000)
     
     # Reject all other bids
     await db.bids.update_many(
@@ -406,7 +421,28 @@ async def award_bid(project_id: str, bid_id: str, current_user: dict = Depends(g
     )
     
     # Update project status
-    await db.projects.update_one({"id": project_id}, {"$set": {"status": ProjectStatus.awarded.value}})
+    await db.projects.update_one({"id": project_id}, {"$set": {"status": ProjectStatus.awarded.value, "awarded_contractor_id": contractor["id"]}})
+    
+    # Send acceptance email to winner
+    await EmailService.send_bid_accepted_email(
+        contractor_user["email"],
+        contractor_user["full_name"],
+        project["title"],
+        current_user["full_name"],
+        current_user["company_name"]
+    )
+    
+    # Send rejection emails to others
+    for rejected_bid in rejected_bids:
+        rejected_contractor = await db.contractors.find_one({"id": rejected_bid["contractor_id"]}, {"_id": 0})
+        if rejected_contractor:
+            rejected_user = await db.profiles.find_one({"id": rejected_contractor["user_id"]}, {"_id": 0})
+            if rejected_user:
+                await EmailService.send_bid_rejected_email(
+                    rejected_user["email"],
+                    rejected_user["full_name"],
+                    project["title"]
+                )
     
     return {"success": True, "message": "Bid awarded successfully"}
 
