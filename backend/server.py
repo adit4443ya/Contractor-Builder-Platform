@@ -146,6 +146,53 @@ class BidCreate(BaseModel):
     proposal: str
     attachments: List[str] = []
 
+class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    project_id: str
+    sender_id: str
+    sender_name: str
+    sender_type: str
+    message: str
+    created_at: str
+
+class ChatMessageCreate(BaseModel):
+    project_id: str
+    message: str
+
+class Milestone(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    project_id: str
+    title: str
+    description: str
+    amount: int
+    due_date: str
+    status: str  # pending, in_progress, completed, paid
+    created_at: str
+
+class MilestoneCreate(BaseModel):
+    title: str
+    description: str
+    amount: int
+    due_date: str
+
+class Payment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    project_id: str
+    milestone_id: str
+    amount: int
+    payment_method: str
+    upi_id: Optional[str] = None
+    transaction_id: Optional[str] = None
+    status: str  # pending, completed, failed
+    created_at: str
+
+class PaymentCreate(BaseModel):
+    milestone_id: str
+    upi_id: str
+
 class Bid(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
