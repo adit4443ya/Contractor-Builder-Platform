@@ -537,6 +537,18 @@ async def submit_bid(bid: BidCreate, current_user: dict = Depends(get_current_us
     # Update project bid count
     await db.projects.update_one({"id": bid.project_id}, {"$inc": {"bid_count": 1}})
     
+    # Send email notification to builder
+    builder = await db.profiles.find_one({"id": project["builder_id"]}, {"_id": 0})
+    if builder:
+        await EmailService.send_bid_received_email(
+            builder["email"],
+            builder["full_name"],
+            project["title"],
+            project["id"],
+            current_user["full_name"],
+            bid.quoted_price
+        )
+    
     return {"success": True, "bid_id": bid_id}
 
 @api_router.get("/contractor/bids", response_model=List[Bid])
