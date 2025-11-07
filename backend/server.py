@@ -608,6 +608,141 @@ async def get_contractor_stats(current_user: dict = Depends(get_current_user)):
         "rating": contractor["rating"]
     }
 
+# Contractor Profile View (for builders)
+@api_router.get("/contractors/{contractor_id}")
+async def get_contractor_public_profile(contractor_id: str, current_user: dict = Depends(get_current_user)):
+    contractor = await db.contractors.find_one({"id": contractor_id}, {"_id": 0})
+    if not contractor:
+        raise HTTPException(status_code=404, detail="Contractor not found")
+    
+    user = await db.profiles.find_one({"id": contractor["user_id"]}, {"_id": 0, "password_hash": 0})
+    
+    return {
+        "success": True,
+        "contractor": contractor,
+        "user": user
+    }
+
+# Chat endpoints
+@api_router.post("/chat/send")
+async def send_message(message: ChatMessageCreate, current_user: dict = Depends(get_current_user)):
+    project = await db.projects.find_one({"id": message.project_id}, {"_id": 0})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    message_id = str(uuid.uuid4())
+    message_doc = {
+        "id": message_id,
+        "project_id": message.project_id,
+        "sender_id": current_user["id"],
+        "sender_name": current_user["full_name"],
+        "sender_type": current_user["user_type"],
+        "message": message.message,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.chat_messages.insert_one(message_doc)
+    
+    # Send email notification to recipient
+    if current_user["user_type"] == "builder":
+        if project.get("awarded_contractor_id"):
+            contractor = await db.contractors.find_one({"id": project["awarded_contractor_id"]}, {"_id": 0})
+            if contractor:
+                recipient = await db.profiles.find_one({"id": contractor["user_id"]}, {"_id": 0})
+                if recipient:
+                    await EmailService.send_new_message_email(
+                        recipient["email"],
+                        recipient["full_name"],
+                        current_user["full_name"],
+                        project["title"],
+                        project["id"]
+                    )
+    else:
+        builder = await db.profiles.find_one({"id": project["builder_id"]}, {"_id": 0})
+        if builder:
+            await EmailService.send_new_message_email(
+                builder["email"],
+                builder["full_name"],
+                current_user["full_name"],
+                project["title"],
+                project["id"]
+            )
+    
+    return {"success": True, "message_id": message_id}
+
+@api_router.get("/chat/{project_id}", response_model=List[ChatMessage])
+async def get_messages(project_id: str, current_user: dict = Depends(get_current_user)):
+    messages = await db.chat_messages.find({"project_id": project_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    return messages
+
+# Milestone endpoints
+@api_router.post("/projects/{project_id}/milestones")
+async def create_milestone(project_id: str, milestone: MilestoneCreate, current_user: dict = Depends(get_current_user)):
+    if current_user["user_type"] != "builder":
+        raise HTTPException(status_code=403, detail="Only builders can create milestones")
+    
+    project = await db.projects.find_one({"id": project_id, "builder_id": current_user["id"]})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    milestone_id = str(uuid.uuid4())
+    milestone_doc = {
+        "id": milestone_id,
+        "project_id": project_id,
+        "title": milestone.title,
+        "description": milestone.description,
+        "amount": milestone.amount,
+        "due_date": milestone.due_date,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.milestones.insert_one(milestone_doc)
+    return {"success": True, "milestone_id": milestone_id}
+
+@api_router.get("/projects/{project_id}/milestones", response_model=List[Milestone])
+async def get_milestones(project_id: str, current_user: dict = Depends(get_current_user)):
+    milestones = await db.milestones.find({"project_id": project_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    return milestones
+
+@api_router.put("/milestones/{milestone_id}/status")
+async def update_milestone_status(milestone_id: str, status: str, current_user: dict = Depends(get_current_user)):
+    await db.milestones.update_one({"id": milestone_id}, {"$set": {"status": status}})
+    return {"success": True}
+
+# Payment endpoints
+@api_router.post("/payments/create")
+async def create_payment(payment: PaymentCreate, current_user: dict = Depends(get_current_user)):
+    if current_user["user_type"] != "builder":
+        raise HTTPException(status_code=403, detail="Only builders can make payments")
+    
+    milestone = await db.milestones.find_one({"id": payment.milestone_id}, {"_id": 0})
+    if not milestone:
+        raise HTTPException(status_code=404, detail="Milestone not found")
+    
+    payment_id = str(uuid.uuid4())
+    payment_doc = {
+        "id": payment_id,
+        "project_id": milestone["project_id"],
+        "milestone_id": payment.milestone_id,
+        "amount": milestone["amount"],
+        "payment_method": "google_pay",
+        "upi_id": payment.upi_id,
+        "transaction_id": f"TXN{uuid.uuid4().hex[:12].upper()}",
+        "status": "completed",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.payments.insert_one(payment_doc)
+    await db.milestones.update_one({"id": payment.milestone_id}, {"$set": {"status": "paid"}})
+    
+    return {"success": True, "payment_id": payment_id, "transaction_id": payment_doc["transaction_id"]}
+
+@api_router.get("/projects/{project_id}/payments", response_model=List[Payment])
+async def get_payments(project_id: str, current_user: dict = Depends(get_current_user)):
+    payments = await db.payments.find({"project_id": project_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return payments
+
 app.include_router(api_router)
 
 app.add_middleware(
